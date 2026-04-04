@@ -2,7 +2,8 @@
 
 Linux host tool + second-stage bootloader (BL2) for the STMicroelectronics STA8600 (ARM Cortex-A7, automotive GNSS).
 
-> Full instructions: [`docs/INSTRUCTIONS.md`](docs/INSTRUCTIONS.md)
+> Step-by-step walkthrough (CentOS, with expected output): [`docs/WALKTHROUGH_CENTOS.md`](docs/WALKTHROUGH_CENTOS.md)
+> Full reference documentation: [`docs/INSTRUCTIONS.md`](docs/INSTRUCTIONS.md)
 
 ---
 

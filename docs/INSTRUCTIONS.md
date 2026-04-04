@@ -1,5 +1,8 @@
 # STA8600 Bootloader — Complete Instructions
 
+> **New to this?** See [`WALKTHROUGH_CENTOS.md`](WALKTHROUGH_CENTOS.md) for a
+> step-by-step guide with full commands and expected terminal output on CentOS.
+
 ## 1. Overview
 
 ```
