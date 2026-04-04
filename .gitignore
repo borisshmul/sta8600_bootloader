@@ -1,0 +1,13 @@
+keys/priv.pem
+keys/hmac_write.key
+keys/aes.key
+keys/provisioning_summary.txt
+host/*.o
+host/sta_flash
+target/*.o
+target/*.elf
+target/*.bin
+target/*.map
+target/*.dis
+__pycache__/
+*.pyc
