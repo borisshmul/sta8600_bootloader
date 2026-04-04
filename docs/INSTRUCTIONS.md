@@ -125,8 +125,10 @@ GND ────────────── GND
                     nRESET — pull low then release to start ROM BL
 ```
 
-Default: **115200 8N1**, no flow control.  The ROM bootloader auto-detects
-baud by measuring the 0x7F sync byte.
+Default: **921600 8N1**, no flow control.  The ROM bootloader auto-detects
+baud by measuring the 0x7F sync byte.  If your adapter cannot sustain
+921600, pass `-b 115200` — the tool supports 38400 / 57600 / 115200 /
+230400 / 460800 / 921600.
 
 ---
 
@@ -416,7 +418,7 @@ host/sta_flash -d /dev/ttyUSB0 -v \
 |---------|-------------|-----|
 | `Sync failed` | Wrong BOOT pin state | Ensure BOOT[0]=1, BOOT[1]=0 and reset |
 | `Sync failed` | Wrong serial port | `ls /dev/ttyUSB*` or `ls /dev/ttyACM*` |
-| `Sync failed` | Baud mismatch | Try `-b 9600` then `-b 115200` |
+| `Sync failed` | Baud mismatch | Try `-b 115200`; default is 921600 — adapter may not support it |
 | `NACK` on write | Flash not erased | Add `-e` flag |
 | `Product ID: 0xXXXX (UNEXPECTED)` | Wrong board | Verify STA8600 is populated |
 | `Signature FAILED` (BL2 console) | Wrong key embedded in BL2 | Rebuild BL2 with correct modulus |
@@ -430,7 +432,8 @@ host/sta_flash -d /dev/ttyUSB0 -v \
 
 ### UART Console (BL2 debug output)
 
-BL2 prints to UART0 at 115200 8N1.  You will see:
+BL2 prints to UART0 at 921600 8N1 (matches the default flash baud).
+Connect your terminal emulator at the same rate.  You will see:
 
 ```
 [BL2] STA8600 Second-Stage Bootloader

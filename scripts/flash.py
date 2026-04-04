@@ -4,12 +4,16 @@ flash.py — High-level Python flash script for STA8600
 
 Wraps the sta_flash C tool and adds:
   - Automatic reset via GPIO (if gpio-toggle is available)
-  - Progress bars
-  - Pre-flash signature check
-  - Hex-dump of the first bytes for sanity check
+  - Pre-flash image header display
+  - Positional or named bin file arguments
 
-Usage:
-    python3 flash.py --dev /dev/ttyUSB0 --image firmware.bin [--sign] [--erase] [--go]
+Usage (positional — simplest):
+    python3 scripts/flash.py fsbl.bin ssbl.bin
+
+Usage (named flags):
+    python3 scripts/flash.py --fsbl fsbl.bin --ssbl ssbl.bin [options]
+
+Default baud rate: 921600
 """
 
 import argparse
@@ -92,9 +96,8 @@ def run_flash(args):
         print("[!] STA8600 requires both --fsbl and --ssbl binaries")
         return 1
 
-    cmd = [TOOL, "-d", args.dev, "-b", str(args.baud)]
-    cmd += ["--fsbl", args.fsbl]
-    cmd += ["--ssbl", args.ssbl]
+    cmd = [TOOL, "-d", args.dev, "-b", str(args.baud),
+           "--fsbl", args.fsbl, "--ssbl", args.ssbl]
 
     if args.erase:
         cmd.append("-e")
@@ -116,24 +119,44 @@ def run_flash(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="STA8600 flash helper (two-image: FSBL + SSBL)"
+        description="STA8600 flash helper (two-image: FSBL + SSBL)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  python3 flash.py fsbl.bin ssbl.bin            # simplest\n"
+            "  python3 flash.py fsbl.bin ssbl.bin --erase --go\n"
+            "  python3 flash.py --fsbl fsbl.bin --ssbl ssbl.bin --sign-ssbl\n"
+            "  python3 flash.py --info\n"
+        )
     )
-    parser.add_argument("--dev",       default="/dev/ttyUSB0", help="Serial port")
-    parser.add_argument("--baud",      type=int, default=115200)
-    parser.add_argument("--fsbl",      help="FSBL binary (target/bl2_sta8600.bin)")
-    parser.add_argument("--ssbl",      help="SSBL / Application binary")
-    parser.add_argument("--erase",     action="store_true")
-    parser.add_argument("--go",        action="store_true", help="Jump after flash")
+    # Positional: up to two .bin files; named flags override if both given
+    parser.add_argument("bins",        nargs="*", metavar="BIN",
+                        help="[fsbl.bin] [ssbl.bin]  (positional shorthand)")
+    parser.add_argument("--dev",       default="/dev/ttyUSB0", help="Serial port (default /dev/ttyUSB0)")
+    parser.add_argument("--baud",      type=int, default=921600,
+                        help="Baud rate (default 921600)")
+    parser.add_argument("--fsbl",      help="FSBL binary — overrides first positional")
+    parser.add_argument("--ssbl",      help="SSBL / Application binary — overrides second positional")
+    parser.add_argument("--erase",     action="store_true", help="Mass-erase before write")
+    parser.add_argument("--go",        action="store_true", help="CMD_GO after flash")
     parser.add_argument("--verify",    action="store_true", help="Read-back verify")
-    parser.add_argument("--sign-fsbl", action="store_true", help="Sign FSBL with priv.pem")
-    parser.add_argument("--sign-ssbl", action="store_true", help="Sign SSBL with priv.pem")
+    parser.add_argument("--sign-fsbl", action="store_true", help="Sign FSBL with keys/priv.pem")
+    parser.add_argument("--sign-ssbl", action="store_true", help="Sign SSBL with keys/priv.pem")
     parser.add_argument("--encrypt",   metavar="KEY_FILE",
                         help="AES-256 key file (48 bytes: 32 key + 16 IV) for SSBL")
     parser.add_argument("--info",      action="store_true", help="Read chip info only")
     parser.add_argument("--keygen",    action="store_true", help="Generate RSA keypair")
-    parser.add_argument("--gpio-chip",  default=None, help="GPIO chip (e.g. gpiochip0)")
+    parser.add_argument("--gpio-chip",  default=None, help="GPIO chip for reset (e.g. gpiochip0)")
     parser.add_argument("--gpio-reset", type=int, default=None, help="GPIO line for nRESET")
     args = parser.parse_args()
+
+    # Resolve positional → fsbl/ssbl (named flags take precedence)
+    if len(args.bins) > 0 and not args.fsbl:
+        args.fsbl = args.bins[0]
+    if len(args.bins) > 1 and not args.ssbl:
+        args.ssbl = args.bins[1]
+    if len(args.bins) > 2:
+        print("[WARN] More than two positional arguments — extras ignored.")
 
     check_tool()
 
@@ -142,7 +165,7 @@ def main():
         return
 
     if args.info:
-        subprocess.run([TOOL, "-d", args.dev, "--info"])
+        subprocess.run([TOOL, "-d", args.dev, "-b", str(args.baud), "--info"])
         return
 
     # Print header info for each binary

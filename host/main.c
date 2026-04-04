@@ -21,11 +21,15 @@
  *   5. Optionally CMD_GO to FSBL entry point
  *
  * Usage:
- *   sta_flash [options] --fsbl <fsbl.bin> --ssbl <app.bin>
+ *   sta_flash [options] <fsbl.bin> <ssbl.bin>      ← positional (preferred)
+ *   sta_flash [options] --fsbl <fsbl.bin> --ssbl <app.bin>  ← named flags
+ *
+ * Positional arguments are mapped: first file = FSBL, second file = SSBL.
+ * Named flags (--fsbl / --ssbl) take precedence if both are supplied.
  *
  * Options:
  *   -d <dev>            Serial device (default /dev/ttyUSB0)
- *   -b <baud>           Baud rate     (default 115200)
+ *   -b <baud>           Baud rate     (default 921600)
  *   -e                  Mass-erase flash before writing
  *   -g                  CMD_GO to FSBL entry after flashing
  *   -v                  Read-back verify after each write
@@ -197,7 +201,7 @@ static uint8_t *maybe_sign(const uint8_t *raw, size_t raw_len,
 int main(int argc, char **argv)
 {
     const char *dev          = "/dev/ttyUSB0";
-    int         baud         = 115200;
+    int         baud         = 921600;
     int         do_erase     = 0;
     int         do_go        = 0;
     int         do_verify    = 0;
@@ -276,14 +280,26 @@ int main(int argc, char **argv)
         return st == SB_OK ? 0 : 1;
     }
 
+    /* Positional arguments: sta_flash [opts] fsbl.bin ssbl.bin
+     * Named flags (--fsbl / --ssbl) take precedence; positionals fill in
+     * only what is still unset.                                            */
+    int positional_count = argc - optind;
+    if (positional_count >= 1 && !fsbl_path)
+        fsbl_path = argv[optind];
+    if (positional_count >= 2 && !ssbl_path)
+        ssbl_path = argv[optind + 1];
+    if (positional_count > 2)
+        fprintf(stderr, "[WARN] Extra positional arguments ignored.\n");
+
     /* All other operations need a serial connection */
     if (!do_info && !fsbl_path && !ssbl_path && !do_otp) {
         fprintf(stderr,
-            "Usage: %s [options] --fsbl <fsbl.bin> --ssbl <ssbl.bin>\n"
+            "Usage: %s [options] <fsbl.bin> <ssbl.bin>\n"
+            "       %s [options] --fsbl <fsbl.bin> --ssbl <ssbl.bin>\n"
             "       %s --info -d <dev>\n"
             "       %s --keygen\n"
             "       %s --verify-only <image.bin> --pub <pub.pem>\n",
-            argv[0], argv[0], argv[0], argv[0]);
+            argv[0], argv[0], argv[0], argv[0], argv[0]);
         return 1;
     }
 
