@@ -145,7 +145,113 @@ cd ..
 
 ---
 
-### Step 4 — Check serial port permissions
+### Step 4 — Check serial port permissions and adapter type
+
+#### 4a — Identify which USB-serial driver loaded
+
+```bash
+lsusb | grep -iE "ftdi|cp210|prolific|ch340"
+```
+
+**CP2102 (Silicon Labs) — expected output:**
+```
+Bus 001 Device 003: ID 10c4:ea60 Silicon Laboratories CP210x UART Bridge
+```
+
+**FTDI (FT232R / FT2232H / FT4232H) — expected output:**
+```
+Bus 001 Device 004: ID 0403:6001 Future Technology Devices International, Ltd FT232 Serial (UART) IC
+```
+
+Check which kernel module is driving it:
+
+```bash
+dmesg | grep ttyUSB | tail -5
+```
+
+**CP2102:**
+```
+usb 1-1.2: cp210x converter now attached to ttyUSB0
+```
+
+**FTDI:**
+```
+usb 1-1.2: FTDI USB Serial Device converter now attached to ttyUSB0
+```
+
+Both appear as `/dev/ttyUSB0` — no command changes needed for that.
+
+---
+
+#### 4b — FTDI only: set the latency timer to 1 ms
+
+> **Skip this step if you are using a CP2102, CH340, or PL2303 adapter.**
+
+FTDI chips buffer incoming bytes and flush to the host every **16 ms** by
+default.  Each bootloader round-trip (command → ACK → payload → ACK) hits
+this buffer twice.  At 921600 baud the flash will run **10–20× slower than
+expected** without this fix — a 64 KB SSBL that should take ~1 s will take
+15–20 s.
+
+Check the current timer value:
+
+```bash
+cat /sys/bus/usb-serial/devices/ttyUSB0/latency_timer
+```
+
+**Expected output (bad — default):**
+```
+16
+```
+
+Set it to 1 ms:
+
+```bash
+echo 1 | sudo tee /sys/bus/usb-serial/devices/ttyUSB0/latency_timer
+```
+
+**Expected output:**
+```
+1
+```
+
+Verify:
+
+```bash
+cat /sys/bus/usb-serial/devices/ttyUSB0/latency_timer
+```
+
+```
+1
+```
+
+**Make it permanent with a udev rule** (survives reboots and replug):
+
+```bash
+sudo tee /etc/udev/rules.d/99-ftdi-latency.rules <<'EOF'
+# Set FTDI USB-serial latency timer to 1 ms for all FTDI devices.
+# Without this, the 16 ms default buffer flush makes flashing ~15x slower.
+ACTION=="add", SUBSYSTEM=="usb-serial", DRIVERS=="ftdi_sio", \
+    ATTR{latency_timer}="1"
+EOF
+```
+
+Reload udev rules and replug the adapter:
+
+```bash
+sudo udevadm control --reload-rules
+# Unplug and replug the USB adapter, then verify:
+cat /sys/bus/usb-serial/devices/ttyUSB0/latency_timer
+```
+
+**Expected output:**
+```
+1
+```
+
+---
+
+#### 4c — Check port permissions (all adapters)
 
 ```bash
 ls -l /dev/ttyUSB0
@@ -712,6 +818,8 @@ Set BOOT[0]=0, BOOT[1]=0 (normal flash boot) and toggle nRESET manually.
 | Signed flash, manual reset | `host/sta_flash -w -e -v -g target/bl2_sta8600.bin app.bin --sign-fsbl keys/priv.pem --sign-ssbl keys/priv.pem` |
 | Signed flash + monitor | `python3 scripts/flash.py -w --erase --verify --go --monitor --sign-fsbl --sign-ssbl target/bl2_sta8600.bin app.bin` |
 | Verify image offline | `host/sta_flash --verify-only app.bin --pub keys/pub.pem` |
+| Set FTDI latency timer (once) | `echo 1 \| sudo tee /sys/bus/usb-serial/devices/ttyUSB0/latency_timer`
+| Make FTDI latency permanent | `sudo tee /etc/udev/rules.d/99-ftdi-latency.rules` (see Step 4b)
 | Monitor only (with sudo if needed) | `python3 -c "from scripts.flash import launch_monitor; launch_monitor('/dev/ttyUSB0', 921600)"` |
 | Monitor directly (in dialout group) | `minicom -D /dev/ttyUSB0 -b 921600` |
 | Monitor with sudo | `sudo minicom -D /dev/ttyUSB0 -b 921600` |
