@@ -43,6 +43,9 @@
  *   --keygen            Generate RSA-2048 keypair → keys/priv.pem, pub.pem
  *   --otp-write         Provision OTP (use with --pub and --hmac-key)
  *   --hmac-key <file>   32-byte HMAC write key for --otp-write
+ *   -w / --wait-reset   Pause and prompt before sync so you can toggle nRESET
+ *                       manually.  Opens the port first, prints step-by-step
+ *                       instructions, then waits for Enter before attempting sync.
  *   --info              Read chip info only (no flash)
  */
 
@@ -208,6 +211,7 @@ int main(int argc, char **argv)
     int         do_keygen    = 0;
     int         do_otp       = 0;
     int         do_info      = 0;
+    int         wait_reset   = 0;   /* -w: prompt user to toggle reset manually */
     const char *fsbl_path    = NULL;
     const char *ssbl_path    = NULL;
     const char *sign_fsbl    = NULL;
@@ -229,11 +233,12 @@ int main(int argc, char **argv)
         { "otp-write",   no_argument,       0, 'O' },
         { "hmac-key",    required_argument, 0, 'H' },
         { "info",        no_argument,       0, 'I' },
+        { "wait-reset",  no_argument,       0, 'w' },
         { 0, 0, 0, 0 }
     };
 
     int opt, idx;
-    while ((opt = getopt_long(argc, argv, "d:b:egvF:S:A:B:E:V:p:KOHI",
+    while ((opt = getopt_long(argc, argv, "d:b:egvwF:S:A:B:E:V:p:KOHI",
                                long_opts, &idx)) != -1) {
         switch (opt) {
             case 'd': dev        = optarg;        break;
@@ -252,6 +257,7 @@ int main(int argc, char **argv)
             case 'O': do_otp     = 1;             break;
             case 'H': hmac_key_f = optarg;        break;
             case 'I': do_info    = 1;             break;
+            case 'w': wait_reset = 1;             break;
             default:
                 fprintf(stderr, "Unknown option\n");
                 return 1;
@@ -307,10 +313,34 @@ int main(int argc, char **argv)
     int fd = bl_open(dev, baud);
     if (fd < 0) return 1;
 
+    /* -w / --wait-reset: pause and let the user manually toggle nRESET.
+     * The ROM bootloader is only active for a short window after reset, so
+     * we open the port first (to avoid missing the window), print the prompt,
+     * wait for Enter, then immediately begin the sync loop.               */
+    if (wait_reset) {
+        printf("\n");
+        printf("[HOST] -----------------------------------------------\n");
+        printf("[HOST]  Manual reset required\n");
+        printf("[HOST] -----------------------------------------------\n");
+        printf("[HOST]  1. Confirm BOOT[0]=1, BOOT[1]=0\n");
+        printf("[HOST]  2. Pull nRESET LOW  (e.g. short the reset pin)\n");
+        printf("[HOST]  3. Release nRESET HIGH\n");
+        printf("[HOST]  4. Press Enter here within ~2 seconds\n");
+        printf("[HOST] -----------------------------------------------\n");
+        printf("[HOST]  Waiting... (press Enter after reset): ");
+        fflush(stdout);
+        int c;
+        while ((c = getchar()) != '\n' && c != EOF) {}
+        printf("[HOST] Proceeding with sync.\n");
+    } else {
+        printf("[HOST] Ensure BOOT[0]=1, BOOT[1]=0 and assert nRESET.\n");
+    }
+
     printf("[HOST] Syncing with STA8600 ROM bootloader ...\n");
-    printf("[HOST] Ensure BOOT[0]=1, BOOT[1]=0 and assert nRESET.\n");
     if (bl_sync(fd) < 0) {
-        fprintf(stderr, "[HOST] Sync failed. Check BOOT pins, wiring, and reset.\n");
+        fprintf(stderr, "[HOST] Sync failed.\n");
+        if (!wait_reset)
+            fprintf(stderr, "[HOST] Tip: use -w to be prompted before sync so you can reset manually.\n");
         bl_close(fd);
         return 1;
     }

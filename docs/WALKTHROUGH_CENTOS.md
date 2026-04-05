@@ -7,6 +7,10 @@ stage.  Two paths are covered:
 - **Part A — Development (no signature):** get firmware onto the chip as fast as possible
 - **Part B — Secure Boot:** key generation → OTP provisioning → signed flash
 
+**Assumptions in this walkthrough:**
+- nRESET is toggled **manually** (no automated GPIO reset)
+- `/dev/ttyUSB0` may require `sudo` (handled automatically by the scripts)
+
 > For reference-style documentation see [`INSTRUCTIONS.md`](INSTRUCTIONS.md).
 
 ---
@@ -162,48 +166,91 @@ newgrp dialout
 
 ---
 
-### Step 5 — Verify chip connection
+### Step 5 — Verify chip connection (manual reset)
 
-Set **BOOT[0]=1, BOOT[1]=0** on the board, then assert and release nRESET.
+Use the `-w` flag so the tool pauses and tells you exactly when to toggle
+nRESET.  This is the recommended approach whenever reset is manual.
 
 ```bash
-host/sta_flash --info -d /dev/ttyUSB0
+host/sta_flash --info -w -d /dev/ttyUSB0
 ```
 
-**Expected output:**
+**Expected output — the tool opens the port and waits:**
 ```
 [HOST] Opening /dev/ttyUSB0 @ 921600 baud
+
+[HOST] -----------------------------------------------
+[HOST]  Manual reset required
+[HOST] -----------------------------------------------
+[HOST]  1. Confirm BOOT[0]=1, BOOT[1]=0
+[HOST]  2. Pull nRESET LOW  (e.g. short the reset pin)
+[HOST]  3. Release nRESET HIGH
+[HOST]  4. Press Enter here within ~2 seconds
+[HOST] -----------------------------------------------
+[HOST]  Waiting... (press Enter after reset):
+```
+
+Follow the printed steps on the board, then press Enter:
+
+```
+[HOST] Proceeding with sync.
 [HOST] Syncing with STA8600 ROM bootloader ...
-[HOST] Ensure BOOT[0]=1, BOOT[1]=0 and assert nRESET.
 [BL]   Sync OK (attempt 1)
 [BL]   ROM BL version 0x31, 11 supported commands
 [BL]   Product ID: 0x0880 (STA8600 OK)
 ```
 
-If the chip does not respond after 5 attempts:
+> **Timing note:** The ROM bootloader is only active for a short window
+> after nRESET is released.  Toggle reset, then press Enter immediately —
+> don't wait more than ~2 seconds.  The sync loop retries 5 times with
+> short delays, so a little latency is fine.
 
+**If the chip does not respond:**
 ```
 [BL] Sync failed after 5 attempts
-[HOST] Sync failed. Check BOOT pins, wiring, and reset.
+[HOST] Sync failed.
+[HOST] Tip: use -w to be prompted before sync so you can reset manually.
 ```
-
-→ Check BOOT pin state, confirm nRESET was pulsed, try `-b 115200`.
+→ Toggle reset again and re-run.  Try `-b 115200` if 921600 fails.
 
 ---
 
 ### Step 6 — Flash FSBL + SSBL (development, no signature)
 
-Reset the board again (BOOT[0]=1), then:
+Add `-w` so the tool pauses for your manual reset, and `--monitor` so
+minicom opens automatically on the same port after flashing completes.
 
 ```bash
-host/sta_flash -e -v -g  target/bl2_sta8600.bin  app.bin
+host/sta_flash -w -e -v -g  target/bl2_sta8600.bin  app.bin
 ```
 
-**Expected output:**
+Or using the Python wrapper (handles sudo for minicom automatically):
+
+```bash
+python3 scripts/flash.py -w --erase --go --monitor \
+    target/bl2_sta8600.bin  app.bin
+```
+
+**Full expected output — flash tool:**
 ```
 [HOST] Opening /dev/ttyUSB0 @ 921600 baud
+
+[HOST] -----------------------------------------------
+[HOST]  Manual reset required
+[HOST] -----------------------------------------------
+[HOST]  1. Confirm BOOT[0]=1, BOOT[1]=0
+[HOST]  2. Pull nRESET LOW  (e.g. short the reset pin)
+[HOST]  3. Release nRESET HIGH
+[HOST]  4. Press Enter here within ~2 seconds
+[HOST] -----------------------------------------------
+[HOST]  Waiting... (press Enter after reset):
+```
+
+Toggle nRESET on the board, press Enter:
+
+```
+[HOST] Proceeding with sync.
 [HOST] Syncing with STA8600 ROM bootloader ...
-[HOST] Ensure BOOT[0]=1, BOOT[1]=0 and assert nRESET.
 [BL]   Sync OK (attempt 1)
 [BL]   ROM BL version 0x31, 11 supported commands
 [BL]   Product ID: 0x0880 (STA8600 OK)
@@ -224,9 +271,29 @@ host/sta_flash -e -v -g  target/bl2_sta8600.bin  app.bin
 [HOST] Done.
 ```
 
-After CMD_GO, BL2 starts from SYSRAM and you should see on the UART console
-(921600 8N1):
+**If using `--monitor` and sudo is needed** (not in `dialout` group):
+```
+[MON] Flash complete. Opening serial monitor ...
+[MON] Reset the board into normal boot mode (BOOT[0]=0) if needed.
 
+[MON] No direct access to /dev/ttyUSB0.
+[MON] Will launch minicom with sudo.
+[MON] You can avoid this permanently by running:
+[MON]   sudo usermod -aG dialout $USER  (then log out/in)
+
+[MON] sudo password:
+```
+
+Type your sudo password (input is hidden), press Enter:
+
+```
+[MON] Launching: sudo minicom -D /dev/ttyUSB0 -b 921600
+[MON] Press Ctrl-A X to exit minicom.
+```
+
+minicom opens. Toggle nRESET in normal boot mode (BOOT[0]=0, BOOT[1]=0).
+
+**BL2 console output in minicom:**
 ```
 [BL2] STA8600 Second-Stage Bootloader
 [BL2] Build: Apr  4 2026 09:06:00
@@ -239,10 +306,11 @@ After CMD_GO, BL2 starts from SYSRAM and you should see on the UART console
 [BL2] Jumping to application at 0x08040000
 ```
 
-> If the image has no secure header, BL2 will print "Bad image magic" and
-> halt — this is expected for a raw `app.bin`.  For development without
-> secure boot you can skip the signature checks by commenting out the magic
-> check in `target/bootloader.c` and rebuilding BL2.
+Press **Ctrl-A X** then **Enter** to exit minicom.
+
+> **"Bad image magic" from BL2?**  A raw unsigned `app.bin` has no secure
+> header — BL2 will halt.  For development you can disable the magic check
+> in `target/bootloader.c` and rebuild, or proceed to Part B to sign the image.
 
 ---
 
@@ -454,23 +522,32 @@ python3 scripts/secure_provision.py --dev /dev/ttyUSB0 --min-version 1
 
 ---
 
-### Step 11 — Sign the SSBL image offline
+### Step 11 — Sign and flash both images (secure)
+
+First confirm the unsigned image correctly fails verification:
 
 ```bash
 host/sta_flash --verify-only app.bin --pub keys/pub.pem
 ```
-
-Since `app.bin` is unsigned, this should fail — confirming the check works:
 
 **Expected output:**
 ```
 [SEC] app.bin: Bad magic / not a secure image
 ```
 
-Now sign and flash both images together:
+Now sign and flash.  Use `-w` for manual reset and `--monitor` to open
+minicom automatically when done:
 
 ```bash
-host/sta_flash -e -v -g \
+python3 scripts/flash.py -w --erase --verify --go --monitor \
+    --sign-fsbl --sign-ssbl \
+    target/bl2_sta8600.bin  app.bin
+```
+
+Or directly with the C tool (no auto-monitor):
+
+```bash
+host/sta_flash -w -e -v -g \
     target/bl2_sta8600.bin  app.bin \
     --sign-fsbl keys/priv.pem \
     --sign-ssbl keys/priv.pem
@@ -479,6 +556,22 @@ host/sta_flash -e -v -g \
 **Expected output:**
 ```
 [HOST] Opening /dev/ttyUSB0 @ 921600 baud
+
+[HOST] -----------------------------------------------
+[HOST]  Manual reset required
+[HOST] -----------------------------------------------
+[HOST]  1. Confirm BOOT[0]=1, BOOT[1]=0
+[HOST]  2. Pull nRESET LOW  (e.g. short the reset pin)
+[HOST]  3. Release nRESET HIGH
+[HOST]  4. Press Enter here within ~2 seconds
+[HOST] -----------------------------------------------
+[HOST]  Waiting... (press Enter after reset):
+```
+
+Toggle reset, press Enter:
+
+```
+[HOST] Proceeding with sync.
 [HOST] Syncing with STA8600 ROM bootloader ...
 [BL]   Sync OK (attempt 1)
 [BL]   ROM BL version 0x31, 11 supported commands
@@ -525,14 +618,47 @@ host/sta_flash --verify-only app_signed.bin --pub keys/pub.pem
 
 ### Step 13 — Watch BL2 boot output on the secure image
 
-Open a terminal emulator at **921600 8N1** (e.g. `minicom` or `screen`):
+#### Option A — via `--monitor` flag (recommended)
+
+Pass `--monitor` to `flash.py` as shown in Step 11.  It opens minicom
+automatically after flashing and handles sudo if needed.
+
+#### Option B — open minicom manually
+
+Install minicom if not present:
 
 ```bash
 sudo dnf install -y minicom
+```
+
+Check if you can access the port directly:
+
+```bash
+ls -l /dev/ttyUSB0
+```
+
+**If you are in the `dialout` group** (run `groups` to check):
+```bash
 minicom -D /dev/ttyUSB0 -b 921600
 ```
 
-Set BOOT[0]=0, BOOT[1]=0 (normal flash boot) and reset the board.
+**If you are NOT in the `dialout` group** (permission denied without sudo):
+```bash
+sudo minicom -D /dev/ttyUSB0 -b 921600
+```
+
+```
+[sudo] password for youruser:
+```
+Type your password and press Enter.  minicom opens on the serial port.
+
+> **Permanent fix** — add yourself to `dialout` so sudo is never needed:
+> ```bash
+> sudo usermod -aG dialout $USER
+> ```
+> Log out and back in.  Verify with `groups | grep dialout`.
+
+Set BOOT[0]=0, BOOT[1]=0 (normal flash boot) and toggle nRESET manually.
 
 **Expected BL2 console output:**
 ```
@@ -577,11 +703,15 @@ Set BOOT[0]=0, BOOT[1]=0 (normal flash boot) and reset the board.
 | Build host tool | `cd host && make` |
 | Build BL2 | `cd target && make` |
 | Check cross-compiler detected | `cd target && make info` |
-| Check chip responds | `host/sta_flash --info` |
-| Dev flash (no sig) | `host/sta_flash -e -g target/bl2_sta8600.bin app.bin` |
+| Check chip responds (manual reset) | `host/sta_flash --info -w` |
+| Dev flash, manual reset | `host/sta_flash -w -e -g target/bl2_sta8600.bin app.bin` |
+| Dev flash + open monitor after | `python3 scripts/flash.py -w --erase --go --monitor target/bl2_sta8600.bin app.bin` |
 | Generate keys | `host/sta_flash --keygen` |
 | Provision OTP dry run | `python3 scripts/secure_provision.py --dry-run` |
 | Provision OTP (real) | `python3 scripts/secure_provision.py --dev /dev/ttyUSB0` |
-| Signed flash | `host/sta_flash -e -v -g target/bl2_sta8600.bin app.bin --sign-fsbl keys/priv.pem --sign-ssbl keys/priv.pem` |
+| Signed flash, manual reset | `host/sta_flash -w -e -v -g target/bl2_sta8600.bin app.bin --sign-fsbl keys/priv.pem --sign-ssbl keys/priv.pem` |
+| Signed flash + monitor | `python3 scripts/flash.py -w --erase --verify --go --monitor --sign-fsbl --sign-ssbl target/bl2_sta8600.bin app.bin` |
 | Verify image offline | `host/sta_flash --verify-only app.bin --pub keys/pub.pem` |
-| Monitor BL2 console | `minicom -D /dev/ttyUSB0 -b 921600` |
+| Monitor only (with sudo if needed) | `python3 -c "from scripts.flash import launch_monitor; launch_monitor('/dev/ttyUSB0', 921600)"` |
+| Monitor directly (in dialout group) | `minicom -D /dev/ttyUSB0 -b 921600` |
+| Monitor with sudo | `sudo minicom -D /dev/ttyUSB0 -b 921600` |

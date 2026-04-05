@@ -3,20 +3,24 @@
 flash.py — High-level Python flash script for STA8600
 
 Wraps the sta_flash C tool and adds:
+  - Manual reset prompt (-w): step-by-step instructions to toggle nRESET
   - Automatic reset via GPIO (if gpio-toggle is available)
   - Pre-flash image header display
   - Positional or named bin file arguments
+  - --monitor: launch minicom after flashing; handles sudo + password prompt
+    if /dev/ttyUSB* is not user-accessible
 
 Usage (positional — simplest):
     python3 scripts/flash.py fsbl.bin ssbl.bin
 
-Usage (named flags):
-    python3 scripts/flash.py --fsbl fsbl.bin --ssbl ssbl.bin [options]
+Usage with manual reset and post-flash monitor:
+    python3 scripts/flash.py -w --monitor fsbl.bin ssbl.bin
 
 Default baud rate: 921600
 """
 
 import argparse
+import getpass
 import os
 import subprocess
 import sys
@@ -84,6 +88,59 @@ def gpio_reset(gpio_chip: str, gpio_num: int):
         print("[GPIO] gpioset not available — reset the board manually")
 
 
+def launch_monitor(dev: str, baud: int):
+    """
+    Launch minicom for BL2 console output after flashing.
+
+    Access to /dev/ttyUSB* requires the user to be in the 'dialout' group.
+    If the device is not accessible, we fall back to sudo.  Rather than
+    dropping to a raw sudo prompt mid-script, we:
+      1. Check access.
+      2. If sudo is needed, prompt for the password via getpass (hidden input).
+      3. Authenticate sudo with -S (stdin) using a throw-away subprocess,
+         which caches the credentials in the sudo ticket.
+      4. exec sudo minicom with the cached ticket so minicom gets a real
+         terminal (no pipes, no hangups).
+    """
+    cmd = ["minicom", "-D", dev, "-b", str(baud)]
+
+    needs_sudo = not os.access(dev, os.R_OK | os.W_OK)
+
+    if needs_sudo:
+        print(f"\n[MON] No direct access to {dev}.")
+        print("[MON] Will launch minicom with sudo.")
+        print("[MON] You can avoid this permanently by running:")
+        print(f"[MON]   sudo usermod -aG dialout $USER  (then log out/in)")
+        print()
+        try:
+            password = getpass.getpass("[MON] sudo password: ")
+        except KeyboardInterrupt:
+            print("\n[MON] Cancelled.")
+            return
+
+        # Step 1: authenticate and cache the sudo ticket using -v (validate).
+        # -S reads the password from stdin; -k resets any stale ticket first.
+        auth = subprocess.run(
+            ["sudo", "-kS", "-v"],
+            input=(password + "\n").encode(),
+            capture_output=True,
+        )
+        if auth.returncode != 0:
+            print("[MON] sudo authentication failed — check your password.")
+            return
+
+        print(f"[MON] Launching: sudo minicom -D {dev} -b {baud}")
+        print("[MON] Press Ctrl-A X to exit minicom.\n")
+        # Step 2: exec (replace this process) so minicom gets a real tty.
+        # The sudo ticket is cached so no password prompt appears again.
+        os.execlp("sudo", "sudo", *cmd)   # does not return
+
+    else:
+        print(f"[MON] Launching: minicom -D {dev} -b {baud}")
+        print("[MON] Press Ctrl-A X to exit minicom.\n")
+        os.execlp("minicom", *cmd)        # does not return
+
+
 def run_flash(args):
     """
     STA8600 requires TWO binaries: FSBL (BL2) and SSBL (application).
@@ -105,6 +162,8 @@ def run_flash(args):
         cmd.append("-g")
     if args.verify:
         cmd.append("-v")
+    if args.wait_reset:
+        cmd.append("-w")
     if args.sign_fsbl:
         cmd += ["--sign-fsbl", PRIV_KEY]
     if args.sign_ssbl:
@@ -137,9 +196,13 @@ def main():
                         help="Baud rate (default 921600)")
     parser.add_argument("--fsbl",      help="FSBL binary — overrides first positional")
     parser.add_argument("--ssbl",      help="SSBL / Application binary — overrides second positional")
-    parser.add_argument("--erase",     action="store_true", help="Mass-erase before write")
-    parser.add_argument("--go",        action="store_true", help="CMD_GO after flash")
-    parser.add_argument("--verify",    action="store_true", help="Read-back verify")
+    parser.add_argument("--erase",       action="store_true", help="Mass-erase before write")
+    parser.add_argument("--go",          action="store_true", help="CMD_GO after flash")
+    parser.add_argument("--verify",      action="store_true", help="Read-back verify")
+    parser.add_argument("-w", "--wait-reset", action="store_true",
+                        help="Pause before sync and print step-by-step manual reset instructions")
+    parser.add_argument("--monitor",     action="store_true",
+                        help="Launch minicom after flashing (prompts for sudo password if needed)")
     parser.add_argument("--sign-fsbl", action="store_true", help="Sign FSBL with keys/priv.pem")
     parser.add_argument("--sign-ssbl", action="store_true", help="Sign SSBL with keys/priv.pem")
     parser.add_argument("--encrypt",   metavar="KEY_FILE",
@@ -187,7 +250,18 @@ def main():
         import time; time.sleep(0.3)   # let ROM bootloader start
 
     rc = run_flash(args)
-    sys.exit(rc)
+    if rc != 0:
+        sys.exit(rc)
+
+    # --monitor: open minicom on the same port to watch BL2 boot output.
+    # If the board was set to normal boot (BOOT[0]=0) before CMD_GO, BL2
+    # console output will appear here immediately after the jump.
+    if args.monitor:
+        print("\n[MON] Flash complete. Opening serial monitor ...")
+        print("[MON] Reset the board into normal boot mode (BOOT[0]=0) if needed.")
+        launch_monitor(args.dev, args.baud)   # exec — does not return on success
+
+    sys.exit(0)
 
 
 if __name__ == "__main__":
